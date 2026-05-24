@@ -1,0 +1,17 @@
+# Config gerado pelo zabbix-install.sh (contém senha BD/Admin)
+.zabbix-install.conf
+zabbix-deploy.env
+
+# Logs
+*.log
+
+# Locks de editor (LibreOffice, vim, etc.)
+.~lock.*
+*.swp
+*.swo
+*~
+
+# OS/IDE
+.DS_Store
+.idea/
+.vscode/
