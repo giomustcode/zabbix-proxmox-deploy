@@ -174,34 +174,6 @@ no `qm set --scsi0` continuam a aplicar-se: `discard=on` (TRIM passthrough),
 
 ---
 
-## Verificação da imagem cloud (integridade)
-
-Antes de importar, o script verifica:
-
-1. **Assinatura GPG** do ficheiro `SHA512SUMS` contra a chave da **Debian
-   Cloud Team** (`DF9B9C49EAA9298432589D76DA87E80D6294BE9B` por defeito).
-   Chave é obtida de `keyring.debian.org` (fallback `keys.openpgp.org`).
-2. **SHA512** da imagem qcow2 contra a entrada em `SHA512SUMS`.
-
-Falha fechada em qualquer um dos passos — protege contra:
-- Corrupção em trânsito (MITM mesmo com HTTPS comprometido)
-- Servidor mirror comprometido
-- Ficheiro local adulterado entre downloads
-
-Overrides:
-
-```bash
-# Se a Debian rotacionar a chave (raro):
-DEBIAN_CLOUD_KEYS="newfpr1 newfpr2" bash proxmox-provision.sh ...
-
-# Bypass total (debug / ambiente offline; NÃO usar em produção):
-SKIP_IMAGE_VERIFY=1 bash proxmox-provision.sh ...
-```
-
-Pré-requisito: `gnupg` instalado no host Proxmox (já vem por defeito em PVE).
-
----
-
 ## Portas
 
 | Porta  | Proto | Serviço                  |

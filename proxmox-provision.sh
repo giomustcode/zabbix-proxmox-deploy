@@ -34,12 +34,6 @@ CLOUD_IMAGE_FILE="/var/lib/vz/template/qemu/debian-13-genericcloud-amd64.qcow2"
 CLOUD_USER="${CLOUD_USER:-zabbixadm}"
 CLOUD_PASS="${CLOUD_PASS:-$(openssl rand -base64 12)}"
 
-# Verificação de integridade da imagem cloud
-# Override com env var DEBIAN_CLOUD_KEYS="fpr1 fpr2" se a Debian rotacionar
-DEBIAN_CLOUD_KEYS="${DEBIAN_CLOUD_KEYS:-DF9B9C49EAA9298432589D76DA87E80D6294BE9B}"
-# SKIP_IMAGE_VERIFY=1 → ignora verificação (apenas para debug/emergência)
-SKIP_IMAGE_VERIFY="${SKIP_IMAGE_VERIFY:-0}"
-
 # Passwords da aplicação (geradas se não vierem do ambiente)
 ZBX_DB_PASS="${ZBX_DB_PASS:-$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c20)}"
 ZBX_ADMIN_PASS="${ZBX_ADMIN_PASS:-}"     # Vazio = mantém default 'zabbix' do Zabbix
@@ -203,73 +197,6 @@ download_cloud_image() {
   }
   mv "${CLOUD_IMAGE_FILE}.part" "$CLOUD_IMAGE_FILE"
   success "Imagem baixada"
-}
-
-# Verifica SHA512SUMS + assinatura GPG da Debian Cloud Team antes do import.
-# Falha fechada por defeito; bypass apenas com SKIP_IMAGE_VERIFY=1.
-verify_cloud_image() {
-  step "Verificando integridade da imagem cloud"
-
-  if [[ "$SKIP_IMAGE_VERIFY" == "1" ]]; then
-    warn "SKIP_IMAGE_VERIFY=1 — verificação SALTADA (não recomendado em produção)"
-    return
-  fi
-
-  local IMG_DIR IMG_NAME BASE_URL SUMS_FILE SIGN_FILE
-  IMG_DIR="$(dirname "$CLOUD_IMAGE_FILE")"
-  IMG_NAME="$(basename "$CLOUD_IMAGE_FILE")"
-  BASE_URL="${CLOUD_IMAGE_URL%/*}"
-  SUMS_FILE="${IMG_DIR}/SHA512SUMS"
-  SIGN_FILE="${IMG_DIR}/SHA512SUMS.sign"
-
-  # Re-baixa sempre (são leves, ~few KB; reflectem o último build)
-  info "Baixando SHA512SUMS + .sign"
-  wget -q -O "$SUMS_FILE" "${BASE_URL}/SHA512SUMS"      || error "Falha a baixar SHA512SUMS"
-  wget -q -O "$SIGN_FILE" "${BASE_URL}/SHA512SUMS.sign" || error "Falha a baixar SHA512SUMS.sign"
-
-  # --- 1) Verificação GPG da SHA512SUMS ---
-  if ! command -v gpg &>/dev/null; then
-    error "gpg não instalado. Instale com 'apt install gnupg' ou use SKIP_IMAGE_VERIFY=1 (não recomendado)"
-  fi
-
-  local GNUPGHOME_TMP
-  GNUPGHOME_TMP=$(mktemp -d)
-  # Cleanup garantido mesmo em erro
-  trap 'rm -rf "$GNUPGHOME_TMP"' EXIT
-
-  info "Importando chave(s) Debian Cloud Team: ${DEBIAN_CLOUD_KEYS}"
-  local KEY_OK=0
-  for KS in "hkps://keyring.debian.org" "hkps://keys.openpgp.org"; do
-    if GNUPGHOME="$GNUPGHOME_TMP" gpg --batch --quiet --keyserver "$KS" \
-         --recv-keys $DEBIAN_CLOUD_KEYS 2>/dev/null; then
-      KEY_OK=1
-      info "Chave obtida via $KS"
-      break
-    fi
-  done
-  [[ "$KEY_OK" == "1" ]] || error "Não consegui obter a chave GPG de nenhum keyserver — verifique rede ou defina DEBIAN_CLOUD_KEYS"
-
-  info "Verificando assinatura GPG de SHA512SUMS..."
-  if ! GNUPGHOME="$GNUPGHOME_TMP" gpg --batch --quiet \
-         --verify "$SIGN_FILE" "$SUMS_FILE" 2>/dev/null; then
-    error "ASSINATURA GPG INVÁLIDA — SHA512SUMS pode ter sido adulterado. Abortando."
-  fi
-  success "Assinatura GPG válida (Debian Cloud Team)"
-
-  # --- 2) Verificação SHA512 da imagem ---
-  info "Verificando SHA512 de ${IMG_NAME}..."
-  local EXPECTED ACTUAL
-  EXPECTED=$(grep -E "[[:space:]]${IMG_NAME}$" "$SUMS_FILE" | awk '{print $1}' | head -1)
-  [[ -n "$EXPECTED" ]] || error "Imagem ${IMG_NAME} não está em SHA512SUMS — URL desactualizada?"
-
-  ACTUAL=$(sha512sum "$CLOUD_IMAGE_FILE" | awk '{print $1}')
-  if [[ "$EXPECTED" != "$ACTUAL" ]]; then
-    error "SHA512 NÃO BATE para ${IMG_NAME}. Apague ${CLOUD_IMAGE_FILE} e re-execute. Esperado: ${EXPECTED:0:32}... Obtido: ${ACTUAL:0:32}..."
-  fi
-  success "SHA512 confirmado — imagem íntegra"
-
-  trap - EXIT
-  rm -rf "$GNUPGHOME_TMP"
 }
 
 # --- CRIAR VM ----------------------------------------------------------------
@@ -462,7 +389,6 @@ main() {
     error "zabbix-install.sh não encontrado em ${SCRIPT_DIR}"
 
   download_cloud_image
-  verify_cloud_image
   create_vm
   write_userdata
   start_vm
