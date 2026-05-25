@@ -83,11 +83,13 @@ wait_for_apt() {
 # --- REPOS -------------------------------------------------------------------
 add_zabbix_repo() {
   step "Adicionando repositório oficial Zabbix ${ZBX_MAJOR} para Debian ${VERSION_ID}"
-  # Padrão atual do Zabbix 7.0 (verificado em zabbix.com/download):
+  # Padrão atual do Zabbix 7.0 para Debian 13 (verificado em zabbix.com/download
+  # e listagem em repo.zabbix.com em 2025-08, ficheiro existe desde então):
   #   zabbix-release_latest_<MAJOR>+debian<VERSION>_all.deb
-  # URL: repo.zabbix.com/zabbix/<MAJOR>/release/debian/pool/main/z/zabbix-release/
+  # URL correcta: repo.zabbix.com/zabbix/<MAJOR>/debian/pool/main/z/zabbix-release/
+  # (NÃO inclui /release/ no path — esse era o erro anterior que dava 404)
   local DEB="zabbix-release_latest_${ZBX_MAJOR}+debian${VERSION_ID}_all.deb"
-  local URL="${ZBX_REPO_URL:-https://repo.zabbix.com/zabbix/${ZBX_MAJOR}/release/debian/pool/main/z/zabbix-release/${DEB}}"
+  local URL="${ZBX_REPO_URL:-https://repo.zabbix.com/zabbix/${ZBX_MAJOR}/debian/pool/main/z/zabbix-release/${DEB}}"
 
   local TMP
   TMP=$(mktemp -d)
@@ -102,17 +104,28 @@ add_zabbix_repo() {
 }
 
 add_timescaledb_repo() {
-  step "Adicionando repositório oficial TimescaleDB"
-  install -d -m 0755 /etc/apt/keyrings
-  # Chave GPG do packagecloud do Timescale
-  curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey \
-    | gpg --dearmor -o /etc/apt/keyrings/timescaledb.gpg
-  chmod 0644 /etc/apt/keyrings/timescaledb.gpg
-
-  cat > /etc/apt/sources.list.d/timescaledb.list <<REPO
-deb [signed-by=/etc/apt/keyrings/timescaledb.gpg] https://packagecloud.io/timescale/timescaledb/debian/ ${OS_CODENAME} main
-REPO
-  success "Repositório TimescaleDB adicionado (codename: ${OS_CODENAME})"
+  step "TimescaleDB: usando pacote nativo do Debian (sem repo externo)"
+  # Razão: o repo packagecloud do Timescale entrega SEMPRE a versão mais
+  # recente (>=2.27 em 2026), que o Zabbix 7.0 LTS REJEITA — o suporte
+  # máximo no 7.0.x mais novo é 2.26.x (ver docs do Zabbix 7.0).
+  #
+  # O Debian 13 (Trixie) já traz `postgresql-17-timescaledb` 2.19.3 nos repos
+  # oficiais — versão estável, dentro do intervalo suportado pelo Zabbix 7.0
+  # (2.13–2.26) e que não vai saltar para uma versão incompatível num
+  # `apt upgrade` futuro. Isso elimina a necessidade do repo packagecloud.
+  #
+  # Se um dia quiser uma versão mais recente, descomente o bloco abaixo e
+  # PIN a versão (ex: 2.19.*) para não cair na latest:
+  #
+  #   install -d -m 0755 /etc/apt/keyrings
+  #   curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey \
+  #     | gpg --dearmor -o /etc/apt/keyrings/timescaledb.gpg
+  #   echo "deb [signed-by=/etc/apt/keyrings/timescaledb.gpg] \
+  #         https://packagecloud.io/timescale/timescaledb/debian/ ${OS_CODENAME} main" \
+  #     > /etc/apt/sources.list.d/timescaledb.list
+  #   # depois, em install_postgres_and_timescale, fixe a versão:
+  #   #   apt-get install -y timescaledb-2-postgresql-17=2.19.*
+  success "TimescaleDB: pacote nativo do Debian 13 (postgresql-17-timescaledb)"
 }
 
 apt_update() {
@@ -134,13 +147,21 @@ install_base_packages() {
 install_postgres_and_timescale() {
   step "Instalando PostgreSQL ${PG_VERSION} + TimescaleDB"
   wait_for_apt
+  # Nome do pacote Debian: postgresql-<v>-timescaledb (não confundir com
+  # `timescaledb-2-postgresql-<v>` do packagecloud — é o MESMO .so/extension,
+  # nomes diferentes). Debian 13 traz 2.19.3, suportado pelo Zabbix 7.0.
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     "postgresql-${PG_VERSION}" "postgresql-client-${PG_VERSION}" \
     "postgresql-contrib-${PG_VERSION}" \
-    "timescaledb-2-postgresql-${PG_VERSION}" timescaledb-tools
+    "postgresql-${PG_VERSION}-timescaledb"
 
   systemctl enable postgresql
   systemctl start postgresql
+
+  # Log da versão de TimescaleDB instalada (útil em troubleshooting)
+  local TS_VER
+  TS_VER=$(dpkg-query -W -f='${Version}' "postgresql-${PG_VERSION}-timescaledb" 2>/dev/null || echo "?")
+  info "TimescaleDB instalado: ${TS_VER} (Zabbix 7.0 suporta 2.13.x–2.26.x)"
   success "PostgreSQL e TimescaleDB instalados"
 }
 

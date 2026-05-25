@@ -208,6 +208,34 @@ Se ultrapassar 150 hosts e/ou 2000 NVPS, suba `StartPollers` e `HistoryCacheSize
 
 ---
 
+## Login na VM (consola e SSH)
+
+A VM é provisionada com SSH password authentication **habilitado** e os
+seguintes utilizadores:
+
+- **`zabbixadm`** (sudo, NOPASSWD) — utilizador principal
+- **`root`** — mesma password do `zabbixadm`, para acesso de emergência
+
+A password é a mostrada no resumo final (`Pass Cloud:`). Login via SSH ou
+via consola serial do Proxmox (`qm terminal <VMID>`).
+
+> Histórico: cloud-images Debian têm `PasswordAuthentication no` por defeito
+> e `--ciuser/--cipassword` do `qm set` são ignorados quando se usa
+> `--cicustom user=...`. O user-data deste script cria explicitamente os
+> utilizadores e activa SSH password — sem isto fica bloqueado.
+
+## TimescaleDB — versão e compatibilidade
+
+Este script usa o pacote nativo do Debian 13 (`postgresql-17-timescaledb`,
+versão **2.19.3**), e **não** o repo packagecloud. Razão: Zabbix 7.0 LTS
+só suporta TimescaleDB 2.13.x–2.26.x; o packagecloud entrega sempre a
+latest (>=2.27 em 2026) e o Zabbix rejeita. O pacote Debian é estável
+e fica preso à versão do Trixie — sem surpresas em `apt upgrade`.
+
+Para forçar uma versão diferente, edite `add_timescaledb_repo()` em
+`zabbix-install.sh` (há um bloco comentado para o repo packagecloud com
+pin de versão).
+
 ## Após instalação
 
 O setup wizard **já está saltado** — o script pré-grava `/etc/zabbix/web/zabbix.conf.php`

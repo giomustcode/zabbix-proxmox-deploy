@@ -232,9 +232,12 @@ create_vm() {
   [[ -n "${VM_VLAN}" ]] && NET_OPTS="${NET_OPTS},tag=${VM_VLAN}"
   qm set "${VMID}" --net0 "${NET_OPTS}"
 
+  # NOTA: --ciuser/--cipassword são IGNORADOS quando se usa --cicustom user=...
+  # (cicustom substitui o user-data auto-gerado pelo Proxmox). Por isso o user
+  # e a password têm de ser criados dentro do nosso user-data (ver write_userdata).
+  # Mantemos --nameserver/--searchdomain porque esses entram via meta-data,
+  # não pelo user-data.
   qm set "${VMID}" \
-    --ciuser "${CLOUD_USER}" \
-    --cipassword "${CLOUD_PASS}" \
     --nameserver "${VM_DNS}" \
     --searchdomain "local"
 
@@ -245,10 +248,8 @@ create_vm() {
     qm set "${VMID}" --ipconfig0 "ip=${VM_IP},gw=${VM_GW}"
   fi
 
-  if [[ -n "$VM_SSHKEY" && -f "$VM_SSHKEY" ]]; then
-    qm set "${VMID}" --sshkeys "${VM_SSHKEY}"
-    success "Chave SSH configurada"
-  fi
+  # Nota: chave SSH (se passada via --sshkey) é injectada via user-data em
+  # write_userdata — `qm set --sshkeys` é ignorado quando há --cicustom user=...
 
   success "VM ${VMID} criada"
 }
@@ -266,12 +267,50 @@ write_userdata() {
   local INSTALL_B64
   INSTALL_B64=$(base64 -w0 < "${SCRIPT_DIR}/zabbix-install.sh")
 
+  # Hash SHA-512 da password (formato $6$...) — exigido pelo cloud-init no
+  # bloco `users:`. Sem isto o user é criado mas com password bloqueada.
+  local CLOUD_PASS_HASH
+  CLOUD_PASS_HASH=$(openssl passwd -6 "${CLOUD_PASS}")
+
+  # SSH key (opcional) — embutida no users: para não depender de --sshkeys
+  local SSHKEY_BLOCK=""
+  if [[ -n "$VM_SSHKEY" && -f "$VM_SSHKEY" ]]; then
+    local KEY_LINE
+    KEY_LINE=$(head -n1 "$VM_SSHKEY")
+    SSHKEY_BLOCK=$(printf '\n    ssh_authorized_keys:\n      - %s' "$KEY_LINE")
+  fi
+
+  # IMPORTANTE: cloud-images Debian têm PasswordAuthentication=no e o user
+  # default ('debian') sem password. Como usamos --cicustom, o Proxmox NÃO
+  # cria o user via --ciuser/--cipassword — temos de fazer aqui:
+  #   - users: com passwd hash e lock_passwd:false  (cria zabbixadm logável)
+  #   - ssh_pwauth: true                            (permite SSH com password)
+  #   - chpasswd.expire: false                      (não força troca no 1.º login)
+  #   - disable_root: false + permitir root SSH     (acesso de emergência)
   cat > "${USERDATA_FILE}" <<YAML
 #cloud-config
 hostname: ${VM_NAME}
 manage_etc_hosts: true
 package_update: true
 package_upgrade: false
+
+ssh_pwauth: true
+disable_root: false
+
+users:
+  - name: ${CLOUD_USER}
+    gecos: Zabbix Admin
+    groups: [sudo, adm]
+    shell: /bin/bash
+    lock_passwd: false
+    passwd: "${CLOUD_PASS_HASH}"
+    sudo: ALL=(ALL) NOPASSWD:ALL${SSHKEY_BLOCK}
+
+chpasswd:
+  expire: false
+  users:
+    - {name: root,           password: "${CLOUD_PASS_HASH}", type: hash}
+    - {name: ${CLOUD_USER},  password: "${CLOUD_PASS_HASH}", type: hash}
 
 packages:
   - qemu-guest-agent
@@ -294,9 +333,19 @@ write_files:
     content: |
       ZBX_DB_PASS=${ZBX_DB_PASS}
       ZBX_ADMIN_PASS=${ZBX_ADMIN_PASS}
+  # Garante PasswordAuthentication=yes mesmo que algum drop-in em
+  # /etc/ssh/sshd_config.d/ tente desligá-lo (cloud-images costumam ter um)
+  - path: /etc/ssh/sshd_config.d/00-zabbix-pwauth.conf
+    permissions: '0644'
+    owner: root:root
+    content: |
+      PasswordAuthentication yes
+      PermitRootLogin yes
+      KbdInteractiveAuthentication yes
 
 runcmd:
   - systemctl enable --now qemu-guest-agent
+  - systemctl reload ssh || systemctl restart ssh
   - mkdir -p ${ZBX_SCRIPT_DIR}
   - set -a && . /etc/zabbix-deploy.env && set +a && bash ${ZBX_INSTALL_REMOTE_PATH} 2>&1 | tee /var/log/zabbix-install.log
 
