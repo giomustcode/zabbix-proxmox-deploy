@@ -226,15 +226,22 @@ via consola serial do Proxmox (`qm terminal <VMID>`).
 
 ## TimescaleDB — versão e compatibilidade
 
-Este script usa o pacote nativo do Debian 13 (`postgresql-17-timescaledb`,
-versão **2.19.3**), e **não** o repo packagecloud. Razão: Zabbix 7.0 LTS
-só suporta TimescaleDB 2.13.x–2.26.x; o packagecloud entrega sempre a
-latest (>=2.27 em 2026) e o Zabbix rejeita. O pacote Debian é estável
-e fica preso à versão do Trixie — sem surpresas em `apt upgrade`.
+Este script usa o repo oficial **packagecloud** do Timescale (Community
+Edition / TSL) com **pin de versão em `2.19.*`** via
+`/etc/apt/preferences.d/timescaledb.pref`. Razões:
 
-Para forçar uma versão diferente, edite `add_timescaledb_repo()` em
-`zabbix-install.sh` (há um bloco comentado para o repo packagecloud com
-pin de versão).
+- **Compression precisa de Community.** O pacote nativo do Debian
+  (`postgresql-17-timescaledb`) é a build "Apache-only" — sem compression,
+  sem continuous aggregates, sem policies. O Zabbix mostra
+  *"Detected license does not support compression"* e perde-se ~5–10× de
+  disco em history/trends. Para um deploy de monitorização, isso é
+  inaceitável.
+- **Pin para compatibilidade.** Zabbix 7.0 LTS só suporta TimescaleDB
+  2.13.x–2.26.x. Sem pin, `apt upgrade` viria a entregar >=2.27 e o
+  Zabbix rejeitaria. O Pin-Priority 1001 sobrevive a `apt upgrade`.
+
+Para mudar a versão fixada, exporte `TIMESCALE_PIN_VERSION` antes de
+correr o script (ex: `TIMESCALE_PIN_VERSION='2.20.*'`).
 
 ## Após instalação
 

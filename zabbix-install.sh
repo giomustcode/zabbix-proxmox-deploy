@@ -103,29 +103,44 @@ add_zabbix_repo() {
   success "Repositório Zabbix ${ZBX_MAJOR} adicionado"
 }
 
+TIMESCALE_PIN_VERSION="${TIMESCALE_PIN_VERSION:-2.19.*}"   # Zabbix 7.0 suporta 2.13–2.26
+
 add_timescaledb_repo() {
-  step "TimescaleDB: usando pacote nativo do Debian (sem repo externo)"
-  # Razão: o repo packagecloud do Timescale entrega SEMPRE a versão mais
-  # recente (>=2.27 em 2026), que o Zabbix 7.0 LTS REJEITA — o suporte
-  # máximo no 7.0.x mais novo é 2.26.x (ver docs do Zabbix 7.0).
+  step "Adicionando repositório oficial TimescaleDB (Community Edition, pinned)"
+  # Porquê packagecloud e não o pacote nativo do Debian?
+  #   - O `postgresql-17-timescaledb` do Debian é a build "Apache-only":
+  #     SEM compression, SEM continuous aggregates, SEM policies. O Zabbix
+  #     mostra "Detected license does not support compression" e perde-se
+  #     o ganho de disco de ~5–10× em history/trends.
+  #   - O repo packagecloud entrega a Community Edition (TSL) que tem tudo
+  #     o que o Zabbix usa.
   #
-  # O Debian 13 (Trixie) já traz `postgresql-17-timescaledb` 2.19.3 nos repos
-  # oficiais — versão estável, dentro do intervalo suportado pelo Zabbix 7.0
-  # (2.13–2.26) e que não vai saltar para uma versão incompatível num
-  # `apt upgrade` futuro. Isso elimina a necessidade do repo packagecloud.
+  # Porquê PIN de versão?
+  #   - O Zabbix 7.0 LTS só suporta TimescaleDB 2.13.x–2.26.x. Sem pin, o
+  #     packagecloud entrega a latest (>=2.27 em 2026) e o Zabbix rejeita.
+  #   - Fixamos em ${TIMESCALE_PIN_VERSION} (default 2.19.*) — bem dentro do
+  #     intervalo suportado e sem drift em `apt upgrade`.
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey \
+    | gpg --dearmor -o /etc/apt/keyrings/timescaledb.gpg
+  chmod 0644 /etc/apt/keyrings/timescaledb.gpg
+
+  cat > /etc/apt/sources.list.d/timescaledb.list <<REPO
+deb [signed-by=/etc/apt/keyrings/timescaledb.gpg] https://packagecloud.io/timescale/timescaledb/debian/ ${OS_CODENAME} main
+REPO
+
+  # Pin de versão via apt preferences (Pin-Priority 1001 > 1000 = força
+  # downgrade se necessário, sobrevive a apt upgrade).
   #
-  # Se um dia quiser uma versão mais recente, descomente o bloco abaixo e
-  # PIN a versão (ex: 2.19.*) para não cair na latest:
-  #
-  #   install -d -m 0755 /etc/apt/keyrings
-  #   curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey \
-  #     | gpg --dearmor -o /etc/apt/keyrings/timescaledb.gpg
-  #   echo "deb [signed-by=/etc/apt/keyrings/timescaledb.gpg] \
-  #         https://packagecloud.io/timescale/timescaledb/debian/ ${OS_CODENAME} main" \
-  #     > /etc/apt/sources.list.d/timescaledb.list
-  #   # depois, em install_postgres_and_timescale, fixe a versão:
-  #   #   apt-get install -y timescaledb-2-postgresql-17=2.19.*
-  success "TimescaleDB: pacote nativo do Debian 13 (postgresql-17-timescaledb)"
+  # NOTA: NÃO incluir `timescaledb-tools` no Package: — esse pacote tem
+  # numeração própria (0.x.x) e nunca casa com `2.19.*`. Quando o havia,
+  # o apt parecia ignorar a stanza toda e instalava a latest do .so.
+  cat > /etc/apt/preferences.d/timescaledb.pref <<PREF
+Package: timescaledb-2-postgresql-${PG_VERSION} timescaledb-2-loader-postgresql-${PG_VERSION}
+Pin: version ${TIMESCALE_PIN_VERSION}
+Pin-Priority: 1001
+PREF
+  success "Repo TimescaleDB adicionado; pin em ${TIMESCALE_PIN_VERSION}"
 }
 
 apt_update() {
@@ -138,29 +153,37 @@ apt_update() {
 install_base_packages() {
   step "Instalando pacotes base"
   wait_for_apt
+  # psmisc fornece `fuser` — usado por wait_for_apt(). Sem ele, wait_for_apt
+  # vira silenciosamente um no-op (fuser ausente faz o `&>/dev/null` engolir
+  # o erro), e poderíamos correr durante locks do cloud-init.
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates curl wget gnupg apt-transport-https \
-    sudo lsb-release net-tools cron unzip rsync
+    sudo lsb-release net-tools cron unzip rsync psmisc
   success "Pacotes base instalados"
 }
 
 install_postgres_and_timescale() {
-  step "Instalando PostgreSQL ${PG_VERSION} + TimescaleDB"
+  step "Instalando PostgreSQL ${PG_VERSION} + TimescaleDB Community"
   wait_for_apt
-  # Nome do pacote Debian: postgresql-<v>-timescaledb (não confundir com
-  # `timescaledb-2-postgresql-<v>` do packagecloud — é o MESMO .so/extension,
-  # nomes diferentes). Debian 13 traz 2.19.3, suportado pelo Zabbix 7.0.
+  # Pacote `timescaledb-2-postgresql-<v>` vem do packagecloud (Community
+  # Edition, com compression). O pin em /etc/apt/preferences.d garante
+  # que a versão fica em ${TIMESCALE_PIN_VERSION}.
+  # Fixamos versão do .so e do loader explicitamente (=${TIMESCALE_PIN_VERSION})
+  # — defesa-em-profundidade ao pin em /etc/apt/preferences.d. timescaledb-tools
+  # entra sem versão (numeração própria, 0.x.x).
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     "postgresql-${PG_VERSION}" "postgresql-client-${PG_VERSION}" \
     "postgresql-contrib-${PG_VERSION}" \
-    "postgresql-${PG_VERSION}-timescaledb"
+    "timescaledb-2-postgresql-${PG_VERSION}=${TIMESCALE_PIN_VERSION}" \
+    "timescaledb-2-loader-postgresql-${PG_VERSION}=${TIMESCALE_PIN_VERSION}" \
+    timescaledb-tools
 
   systemctl enable postgresql
   systemctl start postgresql
 
   # Log da versão de TimescaleDB instalada (útil em troubleshooting)
   local TS_VER
-  TS_VER=$(dpkg-query -W -f='${Version}' "postgresql-${PG_VERSION}-timescaledb" 2>/dev/null || echo "?")
+  TS_VER=$(dpkg-query -W -f='${Version}' "timescaledb-2-postgresql-${PG_VERSION}" 2>/dev/null || echo "?")
   info "TimescaleDB instalado: ${TS_VER} (Zabbix 7.0 suporta 2.13.x–2.26.x)"
   success "PostgreSQL e TimescaleDB instalados"
 }
@@ -168,9 +191,21 @@ install_postgres_and_timescale() {
 install_zabbix_packages() {
   step "Instalando pacotes Zabbix ${ZBX_MAJOR}"
   wait_for_apt
+  # NOTA importante: `zabbix-frontend-php` declara extensões PHP como
+  # Recommends em algumas versões — combinado com --no-install-recommends
+  # isto dá-nos erros confusos no frontend (ex: "DB type POSTGRESQL is not
+  # supported", gráficos sem renderizar, etc.). Instalamos TODAS as
+  # extensões PHP que o Zabbix usa, explicitamente:
+  #   php-pgsql    → driver PostgreSQL (obrigatório com $DB['TYPE']='POSTGRESQL')
+  #   php-gd       → renderização de gráficos
+  #   php-bcmath   → cálculos de big numbers
+  #   php-mbstring → strings multi-byte
+  #   php-xml      → parsing XML (templates, imports)
+  #   php-ldap     → autenticação LDAP (opcional mas barato)
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     zabbix-server-pgsql zabbix-frontend-php zabbix-apache-conf \
-    zabbix-sql-scripts zabbix-agent2 zabbix-agent2-plugin-postgresql
+    zabbix-sql-scripts zabbix-agent2 zabbix-agent2-plugin-postgresql \
+    php-pgsql php-gd php-bcmath php-mbstring php-xml php-ldap
   success "Zabbix server/frontend/agent2 instalados"
 }
 
@@ -323,8 +358,13 @@ apply_timescale_hypertables() {
   [[ -n "$TS_SQL" ]] || { warn "Script TimescaleDB do Zabbix não encontrado — hypertables não criadas"; return; }
 
   info "Aplicando ${TS_SQL}"
+  # ON_ERROR_STOP=1 é crítico aqui: o script Timescale do Zabbix começa por
+  # `RAISE EXCEPTION` se a versão do TimescaleDB estiver fora do suportado
+  # (2.13–2.26). Sem isto, o psql continua, dá falsos hypertables e o erro
+  # só aparece muito mais tarde no UI ("Unsupported TimescaleDB...").
   sudo -u "${ZBX_DB_USER}" PGPASSWORD="${ZBX_DB_PASS}" \
-    psql -h 127.0.0.1 -U "${ZBX_DB_USER}" -d "${ZBX_DB_NAME}" -q -f "$TS_SQL"
+    psql -h 127.0.0.1 -U "${ZBX_DB_USER}" -d "${ZBX_DB_NAME}" -q \
+         -v ON_ERROR_STOP=1 -f "$TS_SQL"
   success "Hypertables TimescaleDB configuradas"
 }
 
@@ -360,7 +400,11 @@ configure_zabbix_server() {
   set_kv StartHTTPPollers          "4"   "$CONF"
   set_kv StartPreprocessors        "8"   "$CONF"
   set_kv StartHistoryPollers       "2"   "$CONF"
-  set_kv StartReportWriters        "1"   "$CONF"
+  # StartReportWriters=0: os relatórios agendados precisam de `zabbix-web-service`
+  # (que arrasta Chromium). Não o instalamos, então 0 evita warnings constantes
+  # no log do zabbix-server. Para activar relatórios, instale zabbix-web-service
+  # e suba este valor para 1+.
+  set_kv StartReportWriters        "0"   "$CONF"
 
   set_kv CacheSize                 "128M" "$CONF"
   set_kv HistoryCacheSize          "64M"  "$CONF"
@@ -472,6 +516,29 @@ EOPHP
   fi
 
   success "Frontend pré-configurado — wizard será saltado"
+}
+
+generate_locales() {
+  step "Gerando locales (en_US, pt_PT, pt_BR)"
+  # Cloud-images Debian vêm só com C/POSIX. O frontend do Zabbix chama
+  # setlocale() e falha com "Locale for language 'en_US' is not found on
+  # the web server" se en_US.UTF-8 não estiver gerada pelo locale-gen.
+  # Geramos en_US (obrigatório p/ o default do Zabbix) + pt_PT + pt_BR
+  # (timezone default Africa/Luanda → utilizadores PT-falantes).
+  wait_for_apt
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends locales
+
+  # Passar nomes directamente ao locale-gen — não depende de sed em
+  # /etc/locale.gen (formato muda entre versões). Idempotente: se já existe,
+  # `locale-gen <name>` apenas regenera o ficheiro do locale.
+  locale-gen en_US.UTF-8 pt_PT.UTF-8 pt_BR.UTF-8
+
+  # Verificação dura — se algo correr mal, o instalador pára aqui em vez
+  # de o utilizador descobrir o erro só no browser depois.
+  if ! locale -a | grep -qi '^en_us\.utf8$'; then
+    error "locale-gen falhou: en_US.UTF-8 não aparece em 'locale -a'"
+  fi
+  success "Locales prontos (en_US.UTF-8, pt_PT.UTF-8, pt_BR.UTF-8)"
 }
 
 configure_apache_php() {
@@ -602,6 +669,7 @@ main() {
 
   configure_zabbix_server
   configure_zabbix_agent2
+  generate_locales
   configure_apache_php
   configure_zabbix_frontend
 
