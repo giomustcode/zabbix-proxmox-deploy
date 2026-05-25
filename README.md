@@ -1,8 +1,8 @@
-# Zabbix 7.0 LTS — Deploy Automatizado para Proxmox
+# Zabbix 7.0 LTS - Deploy Automatizado para Proxmox
 
 Dois scripts para provisionar uma VM Debian 13 (Trixie) no Proxmox e instalar
 a stack completa do Zabbix 7.0 LTS com PostgreSQL 17 + TimescaleDB + Apache +
-agent2. Dimensionado para 100–150 hosts monitorados.
+agent2. Dimensionado para até 100–150 hosts monitorados.
 
 ---
 
@@ -251,7 +251,7 @@ apaga o ficheiro e abre `/zabbix/setup.php`.
    - "Override item history period" + "Override item trend period"
    - "Enable compression"
 
-### Azure Monitor
+### + integração com Azure Monitor
 
 O Zabbix 7.0 vem com templates oficiais para Azure (sem precisar instalar nada extra):
 
@@ -268,7 +268,7 @@ Para usar:
 
 ---
 
-## Backup (configurar IMEDIATAMENTE após o deploy)
+## Backup (configurar preferencialmente de imediato após o deploy)
 
 O script **não cria** jobs de backup deliberadamente — política de backup
 vive em `/etc/pve/jobs.cfg` (cluster-wide), e fragmentar essa config a partir
